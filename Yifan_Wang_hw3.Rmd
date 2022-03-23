@@ -1,0 +1,317 @@
+---
+title: "613HW3"
+author: "Yifan Wang"
+date: "2022/3/3"
+output: html_document
+---
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(nnet)
+```
+```{r}
+datstu <- read.csv("~/Desktop/Data/datstu_v2.csv")
+datsss <- read.csv("~/Desktop/Data/datsss.csv")
+datjss <- read.csv("~/Desktop/Data/datjss.csv")
+```
+#EX1
+***1)number of students/schools/programs***
+```{r }
+nrow(datstu)#number of students is 340823 
+
+school=distinct(datsss,schoolcode,.keep_all = TRUE)
+nrow(school)#number of school is 898
+
+program<-data.frame(datstu$choicepgm1,datstu$choicepgm2,datstu$choicepgm3,datstu$choicepgm4,datstu$choicepgm5,datstu$choicepgm6)
+program<-as.vector(as.matrix(program))
+length(unique(program))#number of programs is 33
+```
+
+***2)Number of choices (school, program)***
+```{r }
+long<-reshape(data = datstu, 
+              idvar = "V1", 
+              varying = list(schoolcode=c(5:10),program=c(11:16)), 
+              direction="long", 
+              v.names = c("schoolcode","program")) #convert from wide to long
+
+long<-long %>% mutate(choice=paste(schoolcode,program)) 
+choice<-long %>%select(choice)%>%distinct()
+nrow(choice)#number of chioce is 3086
+```
+
+***#3)Number of students applying to at least one senior high schools in the same district to home***
+```{r }
+student=long %>% select(V1,schoolcode,jssdistrict,program)#subset student's school choice
+total<-left_join(student,school,by="schoolcode")#merge two datasets
+total<-total %>% mutate(match=case_when(sssdistrict==jssdistrict~1,TRUE~0))#match same district
+total %>% group_by(V1.x) %>% summarise(same=sum(match)) %>% filter(same>0) %>% nrow() #sum the number of same districts then count the number of students
+```
+
+***4)Number of students each senior high school admitted***
+```{r }
+admitted<-long %>% mutate(same=case_when(time==rankplace~1,TRUE~0)) %>% filter(same==1)#match choice with rank, keep if same
+admitted %>% group_by(schoolcode) %>% tally()
+```
+
+***5)The cutoff of senior high schools (the lowest score to be admitted)***
+```{r }
+admitted %>% group_by(schoolcode)%>% summarise(cutoff=min(score))
+```
+
+***6)The quality of senior high schools (the average score of students admitted)***
+```{r }
+admitted %>% group_by(schoolcode) %>% summarise(mean(score))
+```
+#EX2
+```{r }
+school=school%>% select(schoolcode,sssdistrict,ssslong,ssslat)
+ex2=long %>% select(schoolcode,program) %>% left_join(school, by="schoolcode")
+
+cutoff2=admitted %>% group_by(schoolcode,program) %>% summarise(cutoff=min(score)) #cutoff of admitted students
+quality2=admitted %>% group_by(schoolcode,program) %>% summarise(quality=mean(score))#quality of admitted students
+size2=admitted %>% group_by(schoolcode,program) %>% tally()#size of admitted students
+
+schooldata=ex2 %>% left_join(cutoff2,by=c("schoolcode","program"))%>% left_join(quality2,by=c("schoolcode","program"))%>% left_join(size2,by=c("schoolcode","program"))
+schooldata=distinct(schooldata,schoolcode,program, .keep_all = TRUE)#keep unique choices
+head(schooldata)
+```
+#EX3
+```{r }
+ex3<-student%>%left_join(datjss, by="jssdistrict")%>%left_join(school, by="schoolcode")#get both latitude and logitude
+ex3=ex3 %>% mutate(dist=sqrt((69.172*(ssslong-point_x)*cos(point_y/57.3))^2 + (69.172*(ssslat-point_y)^2)))
+head(ex3)
+```
+#EX4
+***1)Recode the schoolcode into its first three digits.***
+```{r }
+rev=long %>% mutate(scode_rev=substr(schoolcode, 1, 3))
+```
+
+***2)Recode the program variable into 4 categories***
+```{r }
+rev=rev %>% mutate(pgm_rev = recode(program, 
+                                 "General Arts" = "Arts",
+                                 "Visual Arts" = "Arts",
+                                 "Business" = "Economics",
+                                 "Home Economics" = "Economics",
+                                 "General Science" = "Science",
+                                 .default = "Others")) 
+```
+
+***3)Create a new choice variable choice_rev***
+```{r }
+rev=rev %>% mutate(choice_rev=paste(scode_rev,pgm_rev)) #combine schoolcode and program together as a choice
+```
+
+***4)Recalculate the cutoff and the quality for each recoded choice ***
+```{r }
+admit_rev<-rev %>% mutate(same=case_when(time==rankplace~1,TRUE~0)) %>% filter(same==1)#match choice with rank, keep if same, get admitted student 
+cutoff_rev=admit_rev %>% group_by(choice_rev) %>% summarise(cutoff=min(score))
+cutoff_rev
+```
+```{r }
+#quality for each recoded choice
+quality_rev=admit_rev %>% group_by(choice_rev) %>% summarise(quality=mean(score))
+quality_rev
+```
+
+
+***5)Consider the 20,000 highest score students***
+```{r }
+top=rev %>%filter(time ==1)%>%
+  arrange(desc(score)) %>%
+  filter(score >= score[20000])
+```
+
+#EX5
+```{r }
+fc=top %>% left_join(quality_rev, by="choice_rev") %>% select(score,pgm_rev,choice_rev,quality) %>% filter(quality!="NA")#dataset of first choice
+fc=fc %>% mutate(choice=as.numeric(factor(choice_rev,ordered=TRUE)))
+fc$choice=as.factor(fc$choice)
+length(unique(fc$choice))#247 unique choice in full dataset
+
+#since the full data is large, I draw a subset of 300 with 75 distinct choices
+set.seed(4)
+x <-sample(1:nrow(fc),300)
+draw=fc[x,]
+draw=draw %>% mutate(choice=as.numeric(factor(choice_rev,ordered=TRUE)))
+draw$choice=as.factor(draw$choice)
+n=length(unique(draw$choice))
+n #75 unique choice in subset
+```
+
+***1) I propose the multinomial logit model because score is not the same for individuals***
+```{r }
+# multinomial logit model likelihood function
+mlike = function(param,data)
+{
+  score =  data$score
+  ch    =  data$choice
+  ni = nrow(data)  #individuals
+  nj = length(unique(data[,5])) #choices
+  ut = mat.or.vec(ni,nj)
+  pn1    = param[1:(nj-1)]
+  pn2    = param[(nj):(2*(nj-1))]
+  for (j in 2:nj)
+  {
+    ut[,j] = pn1[j-1]+score*pn2[j-1] 
+  }
+  prob_sum=apply(exp(ut),1,sum) #sum of exp(XB)s
+  prob=exp(ut)/prob_sum # exp(XB)/sum of exp(XB)s
+  # match prob to actual choices
+  probc = NULL
+  for (i in 1:ni)
+  {
+    probc[i] = prob[i,ch[i]]
+  }
+  like = sum(log(probc))
+  return(-like)
+}
+```
+
+***2)Estimate parameters and compute the marginal effect of the proposed model***
+```{r }
+#use R packages to obtain true parameters
+mymodel=multinom(choice_rev~score,data=draw,maxit=3000)
+reg=summary(mymodel)
+reg$coefficients
+```
+```{r }
+#optimize likelihood
+set.seed(4)
+options(scipen=200)
+param=as.vector(reg$coefficients)+runif(2*(n-1),-0.01,0.01) #add noise to true parameters
+res = optim(param,fn=mlike,method="BFGS",control=list(trace=6,REPORT=1,maxit=10000),data=draw,hessian=TRUE)
+res$par
+```
+```{r }
+#marginal effect of multinomial logit
+mprob = function(param,data)
+{
+  score =  data$score
+  ch    =  data$choice
+  ni = nrow(data)  #individuals
+  nj = length(unique(data[,5])) #choices
+  ut = mat.or.vec(ni,nj)
+  pn1    = param[1:(nj-1)]
+  pn2    = param[(nj):(2*(nj-1))]
+  for (j in 2:nj)
+  {
+    ut[,j] = pn1[j-1]+score*pn2[j-1] 
+  }
+  prob_sum=apply(exp(ut),1,sum) #sum of exp(XB)s
+  prob=exp(ut)/prob_sum # exp(XB)/sum of exp(XB)s
+  return(prob)
+}
+pij_m=mprob(res$par,draw)#get choice probabilities
+mb=c(0,res$par[n:(2*(n-1))])#betaj
+ME_mlogit=array(0,dim=c(nrow(draw),n))
+for (i in 1:nrow(draw)) {
+  bi=sum(pij_m[i,]*mb)
+  ME_mlogit[i,]=pij_m[i,]*(mb-bi)
+}
+ME_mlogit=apply(ME_mlogit, 2, mean)
+ME_mlogit
+```
+##EX6
+***1)I propose the conditional logit model because quality is same for individuals***
+```{r }
+#conditional logit model likelihood function
+clike = function(param,data)
+{
+  quality =  data$quality
+  ch    =  data$choice
+  ni = nrow(data)
+  nj = length(unique(data[,5]))
+  ut = mat.or.vec(ni,nj)
+  unique=distinct(data,choice,.keep_all = TRUE)
+  choice_quality=unique[order(unique$choice),]$quality
+  pn1 = c(0,param[1:nj-1])
+  for (j in 1:nj)
+  {
+    ut[,j] = pn1[j] + param[nj]*choice_quality[j]  #intercept+B*Xij
+  }
+  prob_sum=apply(exp(ut),1,sum)  #sum of exp(XB)s
+  prob=exp(ut)/prob_sum  # exp(XB)/sum of exp(XB)s
+  # match prob to actual choices
+  probc = NULL
+  for (i in 1:ni)
+  {
+    probc[i] = prob[i,ch[i]]
+  }
+  like = sum(log(probc))
+  return(-like)
+}
+```
+
+***2)Estimate parameters and compute the marginal effect of the proposed model***
+```{r }
+#optimize likelihood
+set.seed(4)
+param = runif(n)
+res2 = optim(param,fn=clike,method="BFGS",control=list(trace=6,REPORT=1,maxit=10000),data=draw,hessian=TRUE)
+res2$par
+```
+```{r }
+#3)marginal effect
+cprob = function(param,data)
+{
+  quality =  data$quality
+  ch    =  data$choice
+  ni = nrow(data)
+  nj = length(unique(data[,5]))#choices
+  ut = mat.or.vec(ni,nj)
+  unique=distinct(data,choice,.keep_all = TRUE)
+  choice_quality=unique[order(unique$choice),]$quality
+  pn1 = c(0,param[1:nj-1])
+  for (j in 1:nj)
+  {
+    ut[,j] = pn1[j] + param[nj]*choice_quality[j]  #intercept+B*Xij
+  }
+  prob_sum=apply(exp(ut),1,sum)  #sum of exp(XB)s
+  prob=exp(ut)/prob_sum  # exp(XB)/sum of exp(XB)s
+  return(prob)
+}
+
+pij_c=cprob(res2$par,draw) #get choice probabilities
+
+ind=array(0,dim = c(nrow(draw),n,n)) #indicator 
+for (i in 1:nrow(draw)) {
+  diag(ind[i,,]) <- 1
+}
+ME_clogit=array(0,dim=c(nrow(draw),n,n))
+for (i in 1:nrow(draw)) {
+  for (j in 1:n) {
+    for (k in 1:n) {
+      ME_clogit[i,j,k]=pij_c[i,j]*(1-pij_c[i,k])*res2$par[n]
+    }
+  }
+}
+ME_clogit=apply(ME_clogit,2:3,mean)
+ME_clogit
+```
+#EX7
+***1)I think theoretically both model would work. I will use the model with greater likelihood***
+```{r }
+mlike(res$par,draw)
+clike(res2$par,draw)
+```
+
+***2)Calculate choice probabilities under the appropriate model***
+```{r }
+pij_c=cprob(res2$par,draw) #choice probabilities of conditional logit
+pij_c
+```
+
+***3)Simulate how these choice probabilities change when these choices are excluded***
+```{r }
+ex7=draw%>% filter(pgm_rev != "Others") #exclude choice of "others"
+ex7=ex7 %>% mutate(choice=as.numeric(factor(choice_rev,ordered=TRUE)))
+ex7$choice=as.factor(ex7$choice)
+
+param = runif(length(unique(ex7$choice)))
+res3 = optim(param,fn=clike,method="BFGS",control=list(trace=6,REPORT=1,maxit=10000),data=ex7,hessian=TRUE)
+pij_c_exclude=cprob(res3$par,ex7)
+pij_c_exclude
+```
