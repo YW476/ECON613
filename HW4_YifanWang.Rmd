@@ -1,0 +1,300 @@
+---
+title: "613HW4"
+author: "Yifan Wang"
+date: "2022/4/8"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(censReg)
+library(fastDummies)
+library(sampleSelection)
+library(panelr)
+```
+```{r }
+dat_A4 <- read.csv("~/Desktop/Data/dat_A4.csv")
+dat_A4_panel <- read.csv("~/Desktop/Data/dat_A4_panel.csv")
+panel=dat_A4_panel[,-1]
+dat_A4=dat_A4%>%rename(income=YINC_1700_2019)%>%rename(sex=KEY_SEX_1997)%>%rename(nchildren=CV_BIO_CHILD_HH_U18_2019)%>%rename(marital=CV_MARSTAT_COLLAPSED_2019)%>%rename(edudegree=YSCH.3113_2019)%>%rename(race=KEY_RACE_ETHNICITY_1997)
+```
+#EX1
+
+***1) Create additional variable age and total work experience measured in years***
+```{r }
+dat4= dat_A4 %>% mutate(age=2022-KEY_BDATE_Y_1997) %>%
+    rowwise() %>% 
+    mutate(work_exp = sum(c_across(contains("JOB"))*7/365, na.rm = T))
+```
+***2) Create additional education variables indicating total years of schooling***
+```{r }
+#recode individual's highest degree: 4 years for GED; 2 years for AA; 4 years for BA; 2 years for MA; 5 years for Phd; 6 years higher edu for Professional degree
+dat4 = dat4 %>% mutate(totaledu = as.numeric(recode(edudegree, '1' = "0",'2' = "4", '3' = "12",'4' = "14",'5' = "16",'6' = "18",'7' = "23",'8' = "18")))
+
+#since parents' education already in total years of schooling, so only filter out ungraded (95)
+dat4 = dat4 %>% filter(CV_HGC_BIO_DAD_1997!="95" & CV_HGC_BIO_MOM_1997!="95" & CV_HGC_RES_DAD_1997!="95" & CV_HGC_RES_MOM_1997!="95")
+```
+***3) Visualizations***
+```{r }
+#i)Plot the income data by age groups
+ggplot(dat4, aes(x = factor(age), y = income, na.rm = T)) +
+   geom_boxplot(outlier.colour=NA) +
+   coord_cartesian(ylim = c(0, 100000))+ labs(title= "Boxplot of income distribution by age groups")
+```
+```{r }
+#ii)Plot the income data by gender groups
+ggplot(dat4, aes(x = factor(sex), y = income,na.rm = T)) +
+   geom_boxplot(outlier.colour=NA) +
+   coord_cartesian(ylim = c(0, 100000))+ labs(title= "Boxplot of income distribution by gender groups")
+```
+```{r }
+#iii)Plot the income data by number of children
+ggplot(dat4, aes(x = factor(nchildren), y = income,na.rm = T)) +
+   geom_boxplot(outlier.colour=NA) +
+   coord_cartesian(ylim = c(0, 100000))+ labs(title= "Boxplot of income distribution by number of children")
+```
+```{r }
+#i)Table the share of "0" in the income data by age groups
+income0=dat4 %>% filter(income == 0)
+table1 = as.table(table(income0$age))
+prop.table(table1)
+```
+```{r }
+#ii)Table the share of ”0” in the income data by gender groups
+table2 = as.table(table(income0$sex))
+prop.table(table2)
+```
+```{r }
+#iii)Table the share of ”0” in the income data by number of children and marital status
+#by number of children (separated)
+table3 = as.table(table(income0$nchildren))
+prop.table(table3)
+#by marital status (separated)
+table4 = as.table(table(income0$marital))
+prop.table(table4)
+#by number of children and marital status (combined)
+table5 = as.table(table(income0$marital,income0$nchildren))
+prop.table(table5)
+```
+
+***Interpretation of Visualization***
+
+***i)Boxplot of income by age groups shows that there is no significant difference between different age groups***
+
+***ii)Boxplot of income by gender groups shows that male have higher average income than female***
+
+***iii)Boxplot of income by number of children shows that people with 1 to 3 children have higher average income than others***
+
+***i)Table of share of no income by age groups shows that people who are age 38 and 41 have larger proportion than other age groups***
+
+***ii)Table of share of no income by gender groups shows that male have higher proportion than female***
+
+***iii)Table of share of no income by number of children shows that people with 0 to 2 children have higher proportion than others;Table of share of no income by marital status shows that people who are never married and married have higher proportion than others;Table of share of no income by both number of children and marital status shows that for people who are married having additional child increase  the proportion of no income***
+
+#EX2
+
+***1)Specify and estimate an OLS model to explain the income variable***
+```{r }
+dat4$marital=as.factor(dat4$marital)
+dat4$race=as.factor(dat4$race)
+dat4$sex=as.factor(dat4$sex)
+ex2_model1 = dat4 %>% filter(income>0)%>%select(income,age,work_exp,totaledu,nchildren,marital,sex,race) %>% na.omit() %>% mutate(ln_income=log(income))
+model1=lm(ln_income~ age + work_exp + totaledu, data = ex2_model1)
+summary(model1)
+```
+
+***1a)Interpretation of OLS estimates***
+***age: for each additional year of age, income are predicted to increase by 0.36%***
+***work_exp: for each additional year of work experience, income are predicted to increase by 3.9%***
+***totaledu:: for each additional year of schooling, income are predicted to increase by 5.2%***
+
+***1b)Selection problem: Part of dependent variable is unobserved (there are 36 unemployed people, but has wage observations for only those who work) Since people who work are selected non-randomly from the population, estimating the determinants of wages from the subpopulation who work may introduce bias.***
+
+***EX2 Q2)Heckman model: in the first stage, run a probit model to predict employment probability for each individual;In the second stage,by incorporating a transformation of these predicted individual probabilities as an additional explanatory variable, it corrects for self-selection.***
+
+***EX2 Q3)***
+```{r }
+#3)Estimate a Heckman selection model
+ex2_model2 =dat4 %>%select(income,age,work_exp,totaledu,nchildren,marital,sex,race) %>%
+  na.omit() %>% 
+  mutate(ln_income=log(income+1)) %>%  mutate(employed=case_when(income>0~1,TRUE~0))
+#Probit by glm
+reg1 = glm(employed~ age + work_exp + totaledu + nchildren + marital + sex + race,family = binomial(link = "probit"), data=ex2_model2)
+par=as.vector(summary(reg1)$coefficients[, 1])
+#find IMR
+xbeta <- as.matrix(predict(reg1))
+ex2_model2$imr=dnorm(xbeta)/pnorm(xbeta)
+ex2_model2_obs=ex2_model2 %>% filter(income>0) #select positive income
+```
+```{r }
+#additionally add imr as a regressor to OLS
+model2=lm(ln_income~ age + work_exp + totaledu  + imr, data = ex2_model2_obs)
+summary(model2)
+```
+```{r }
+#Verify result with sampleSlection package
+heckit=selection(employed~ age + work_exp + totaledu + nchildren + marital + sex + race,
+                 ln_income~ age + work_exp + totaledu,
+                 method = "2step",
+                 data = ex2_model2)
+summary(heckit) #same estimates
+```
+
+***Interpretation for Heckman model***
+***age: for each additional year of age, income are predicted to increse by 0.11%***
+***work_exp: for each additional year of work experience, income are predicted to increse by 3.8%***
+***totaledu:: for each additional year of schooling, income are predicted to increse by 5.1%***
+***A negative coefficient for the inverse Mills ratio in the OLS regression means that observed wages are less on average than offer wages***
+
+```{r }
+#compare to OLS
+OLS=rbind(as.matrix(summary(model1)$coefficients[, 1]),0)
+compareOLS = cbind(summary(model2)$coefficients[, 1],OLS)
+colnames(compareOLS) = c("Heckman est","OLS est")
+compareOLS 
+```
+***There exist a difference because people who are unemployed are now included in the sample***
+
+#EX3
+***1)Plot a histogram to check whether the distribution of the income variable***
+```{r }
+ggplot(dat4,aes(x=income))+geom_histogram()
+```
+
+***The income variable is right censored at 100000***
+
+***2) I propose the Tobit model (regress ln(income) on age, work experience and education)***
+```{r }
+tobitmodel= censReg(ln_income ~ age + work_exp + totaledu , data = ex2_model1, right = log(100000))
+tobit=summary(tobitmodel)
+tobit
+```
+***3) likelihood function for Tobit***
+```{r }
+#3) likelihood function for Tobit
+tobitlike <- function(par, X, yvar){
+  xbeta <- X %*% par[1:ncol(X)]
+  sigma <- par[ncol(X)+1]
+  d = ifelse(yvar>=log(100000),0,1) #indicator
+  pr <- pnorm((log(100000)-xbeta)/sigma)
+  pdf<- dnorm((yvar-xbeta)/sigma)
+  pr[pr>0.999999] = 0.999999
+  pr[pr<0.000001] = 0.000001
+  like = d*log(1/sigma*pdf) + (1-d)*log(1-pr)
+  return(-sum(like)) 
+}
+# X, y (data) for exercise 3
+df_ex3 <- ex2_model1 %>% mutate(intercept = 1) %>%
+  select(ln_income,intercept,age,work_exp,totaledu)
+X = as.matrix(df_ex3%>%select(-ln_income))
+y = as.matrix(df_ex3%>%select(ln_income))
+#optimize coeficient
+set.seed(4)
+par = runif(ncol(X)+1)
+res2 = optim(par,fn=tobitlike,method="BFGS",control=list(trace=6,REPORT=1,maxit=1000),X=X,yvar=y,hessian=TRUE)
+res2$par[5]=log(res2$par[5])#logSigma
+comparetobit = cbind(tobit$estimate[,1],res2$par)
+colnames(comparetobit) = c("censReg est","own tobit est")
+comparetobit 
+```
+
+***4)Interpretation of Tobit estimates***
+
+***age: for each additional year of age, the predicted value of income increase by 1%***
+
+***work_exp: for each additional year of work experience, the predicted value of income increase by 4.3%***
+
+***totaledu:: for each additional year of schooling, the predicted value of income increase by 58%***
+
+```{r }
+#compare to not correcting for censored data
+comparetobit2 = cbind(res2$par[1:5],OLS)
+colnames(comparetobit2) = c("Tobit est","OLS est")
+rownames(comparetobit2) = c("(Intercept)","age","work_exp","totaledu","logSigma")
+comparetobit2
+```
+
+#EX4
+
+***1)Explain the potential ability bias when trying to explain to understand the determinants of wages***
+
+***There is a causal relationship between education and income. Education is a source of an accumulation of competences, and most productive individuals have an interest in studying for the longest period, entailing the probability of ability bias.***
+
+***2)Exploit the panel dimension of the data to propose a model to correct for the ability bias***.
+```{r }
+#change inconsistent variable names for converting to long
+panel <- panel %>% rename(CV_HIGHEST_DEGREE_EVER_EDT_1998=CV_HIGHEST_DEGREE_9899_1998)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_1999=CV_HIGHEST_DEGREE_9900_1999)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2000=CV_HIGHEST_DEGREE_0001_2000)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2001=CV_HIGHEST_DEGREE_0102_2001)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2002=CV_HIGHEST_DEGREE_0203_2002)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2003=CV_HIGHEST_DEGREE_0304_2003)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2004=CV_HIGHEST_DEGREE_0405_2004)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2005=CV_HIGHEST_DEGREE_0506_2005)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2006=CV_HIGHEST_DEGREE_0607_2006)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2007=CV_HIGHEST_DEGREE_0708_2007)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2008=CV_HIGHEST_DEGREE_0809_2008)%>% rename(CV_HIGHEST_DEGREE_EVER_EDT_2009=CV_HIGHEST_DEGREE_0910_2009)
+#convert wide to long
+long <- long_panel(panel,prefix='_',begin  = 1997, end = 2019,label_location = "end")
+#change variable names
+long <-long %>% rename(year=wave) %>%rename(income=YINC.1700) %>% rename(marital=CV_MARSTAT_COLLAPSED)%>%rename(edu=CV_HIGHEST_DEGREE_EVER_EDT) 
+```
+```{r }
+#generate total work experience
+long2 <-long %>% rowwise() %>% 
+    mutate(work_exp = sum(c_across(contains("JOB"))*7/365, na.rm = T))%>%
+    select(id,year,income,edu,marital,work_exp)%>%na.omit()
+
+#recode individual's highest degree: 4 years for GED; 2 years for AA; 4 years for BA; 2 years for MA; 5 years for Phd; 6 years higher edu for Professional degree
+long2 = long2 %>% mutate(edu = as.numeric(recode(edu,'0' = "0",'1' = "4", '2' = "12",'3' = "14",'4' = "16",'5' = "18",'6' = "23",'7' = "18")))
+```
+
+***Within Estimator***
+```{r }
+income_i_bar= long2 %>% group_by(id) %>% summarise(income_i_bar=mean(income))
+edu_i_bar= long2 %>% group_by(id) %>% summarise(edu_i_bar=mean(edu))
+marital_i_bar= long2 %>% group_by(id) %>% summarise(marital_i_bar=mean(marital))
+workexp_i_bar= long2 %>% group_by(id) %>% summarise(workexp_i_bar=mean(work_exp))
+
+within= long2 %>% left_join(income_i_bar,by="id")%>% left_join(edu_i_bar,by="id") %>% left_join(marital_i_bar,by="id") %>% left_join(workexp_i_bar,by="id")
+
+within=within %>% group_by(id) %>% mutate(income_diff=income-income_i_bar) %>% mutate(edu_diff=edu-edu_i_bar) %>% mutate(marital_diff=marital-marital_i_bar) %>% mutate(workexp_diff=work_exp-workexp_i_bar)
+
+reg1=lm(income_diff~edu_diff + marital_diff + workexp_diff, data= within)
+summary(reg1)
+```
+
+***Interpretation for Within Estimator Model***
+
+***edu: On average, for each additional year increase in education, income will increase 1848, controlling for all time-invariant heterogeneity ***
+
+***workexp: On average, for each additional year increase in work experience, income will increase 2817, controlling for all time-invariant heterogeneity ***
+
+***marital: a categorical variable, can not be interpreted***
+
+***Between Estimator***
+```{r }
+between=income_i_bar %>% left_join(edu_i_bar,by="id") %>% left_join(marital_i_bar,by="id") %>% left_join(workexp_i_bar,by="id")
+
+reg2=lm(income_i_bar~edu_i_bar + marital_i_bar + workexp_i_bar, data= between)
+summary(reg2)
+```
+
+***Interpretation for Between Estimator Model***
+
+***edu: On average, for each additional year increase in education, income will increase 1848, controlling for individual heterogeneity ***
+
+***workexp: On average, for each additional year increase in work experience, income will increase 2817, controlling for individual heterogeneity ***
+
+***marital: a categorical variable, can not be interpreted***
+
+***First Difference Estimator***
+```{r }
+FD = long2 %>% group_by(id) %>% mutate(income_diff= income-lag(income)) %>% mutate(edu_diff= edu-lag(edu)) %>% mutate(marital_diff= marital-lag(marital)) %>% mutate(workexp_diff= work_exp-lag(work_exp))
+reg3=lm(income_diff~ edu_diff + marital_diff + workexp_diff, data= FD)
+summary(reg3)
+```
+
+***Interpretation for First Difference Estimator Model***
+
+***edu: In year t-1, an increase of 1 year education will result in an average of 103 increase in new income.***
+
+***workexp: In year t-1, an increase of 1 year work experience will result in an average of 1699 increase in new income.***
+
+***marital: a categorical variable, can not be interpreted***
+
+***EX3 Q3***
+
+***Within estimator takes the time variation and discard the individual effects; Between estimator takes the individual effects and discard the time variation; First Difference estimator takes both effects***
